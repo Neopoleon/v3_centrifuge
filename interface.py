@@ -1,3 +1,41 @@
+"""
+Centrifuge Control and Monitoring System
+----------------------------------------
+This script communicates with an Arduino-controlled centrifuge via serial communication.
+It enables manual and voice-controlled RPM commands with real-time data visualization.
+
+Features:
+- Serial communication with Arduino
+- Voice input for command execution (via speech-to-text)
+- RPM control with a countdown timer
+- Live data plotting (RPM, PWM, % Error)
+- Text-based manual command input
+- Confirmation system using TTS (Coqui)
+
+Author: Jeff Liu, with the help of Lucas Sosnick and Zach Lin
+Hardware: Raspberry Pi 5 with 8GB RAM
+
+/ Main Program
+  ├── Serial Communication Setup
+  ├── Data Storage (using deque)
+  ├── Helper Functions
+  │   ├── parse_command()              # Extracts RPM and time from input
+  │   ├── send_to_arduino()            # Sends RPM command to Arduino
+  │   ├── confirm_and_execute_command()# Confirms voice command execution
+  │   ├── manual_submit()              # Handles manual text input
+  │   ├── voice_input()                # Processes voice command input
+  │   ├── trim_old_data()              # Removes data older than 60s
+  ├── Data Visualization
+  │   ├── update()                     # Updates the live graph
+  ├── UI Elements
+  │   ├── TextBox (RPM & Time)
+  │   ├── Button (Submit & Voice Input)
+  ├── Main Execution
+  │   ├── FuncAnimation (Real-time update)
+  │   ├── Matplotlib UI rendering
+  │   ├── Serial connection closure
+"""
+
 #!/usr/bin/env python3
 import serial
 import time
