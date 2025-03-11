@@ -1,7 +1,7 @@
 """
-Centrifuge Control and Monitoring System
+Centrifuge Control and Monitoring System (interface.py)
 ----------------------------------------
-This script communicates with an Arduino-controlled centrifuge via serial communication.
+This script communicates with an Arduino-controlled centrifuge via serial communication (pyserial).
 It enables manual and voice-controlled RPM commands with real-time data visualization.
 
 Features:

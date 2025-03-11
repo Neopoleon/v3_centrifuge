@@ -8,6 +8,8 @@
  *
  *  Receives RPM and timer values via UART from Raspberry Pi.
  *  When timer expires, motor stops automatically.
+ * 
+ * Author: Jeff Liu
  ***************************************************************/
 
  const int hallPin = 2;    // Make sure this pin is appropriate for your ESP32 board
