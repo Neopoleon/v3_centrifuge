@@ -8,10 +8,10 @@ import time
 from df import enhance, init_df
 
 # Settings
-SAMPLE_RATE = 48000  # DeepFilterNet requirement
-DURATION = 12        # Seconds to record per chunk
+SAMPLE_RATE = 48000  # DeepFilterNet freq requirement
+DURATION = 12        # sec to record per chunk
 FILENAME = "input.wav"
-TRIGGER_WORD = "Jeff"  # Trigger word 
+TRIGGER_WORD = "Jeff"  # trigger word 
 
 # Load the Whisper model on CPU with FP32 explicitly
 model = whisper.load_model("base").to("cpu").float()
