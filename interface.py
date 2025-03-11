@@ -6,14 +6,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import TextBox, Button
-import voice_to_text as v2t  # Ensure your voice input module is available
-import subprocess  # Needed to call phi3.5
-import piper_tts  # Module for text-to-speech confirmation
-
+import voice_to_text as v2t  
+import subprocess  # Used for playing audio
+from TTS.api import TTS  # Coqui TTSc
 
 SERIAL_PORT = "/dev/cu.usbmodem744DBD9FCC982"  # Update this to your Arduino port
 BAUD_RATE = 115200  # Using the higher baud rate
-
 
 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
 time.sleep(2)  # Allow time for the connection to initialize
@@ -40,7 +38,7 @@ pattern = re.compile(
 def parse_command(command):
     """
     Parses a command string to extract the RPM and time.
-    First, it checks if the command consists of two numbers (expected from phi3.5).
+    First, it checks if the command consists of two numbers.
     Otherwise, it searches for a pattern with "rpm" and time units.
     """
     # Check for a simple two-number format: "<RPM> <TIME>"
@@ -87,15 +85,23 @@ def execute_command(rpm, timer):
 
 def confirm_and_execute_command(rpm, timer):
     """
-    Uses Piper TTS to ask the user for confirmation of the command.
+    Uses Coqui TTS to ask the user for confirmation of the command.
     Waits for a voice response and then either executes the command (if "yes" is detected)
     or cancels it and returns to listening for the next command.
     """
     confirmation_prompt = f"Do you really want to run for {timer} seconds at {rpm} RPM? Please say yes or no."
-    piper_tts.speak(confirmation_prompt)
+    
+    # Initialize Coqui TTS and generate speech to file
+    tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=False)
+    tts.tts_to_file(text=confirmation_prompt, file_path="confirmation.wav")
+    
+    # Play the generated speech file
+    subprocess.run(["aplay", "confirmation.wav"])
+    
     print("Waiting for confirmation...")
     confirmation_response = v2t.recognize_speech()  # Listen for the confirmation response
     print(f"Confirmation response: {confirmation_response}")
+    
     if "yes" in confirmation_response.lower():
         execute_command(rpm, timer)
     else:
