@@ -13,9 +13,9 @@ import edge_tts  # Edge TTS package for neural voices
 import os
 import threading
 
-# ----- TTS Helper Function using Edge TTS -----
+# ----- TTS Helper Function using Edgpipe TTS -----
 async def speak_text(text):
-    # Using "en-US-GuyNeural" for a deeper, Obama-like voice.
+    # Using "en-US-GuyNeural" for a deeper voice.
     communicate = edge_tts.Communicate(text, voice="en-US-GuyNeural")
     output_file = "tts_output.mp3"
     await communicate.save(output_file)
@@ -24,7 +24,7 @@ async def speak_text(text):
     os.remove(output_file)
 
 # ----- Configuration -----
-SERIAL_PORT = "/dev/cu.usbmodem1101"  # Update this to your Arduino port
+SERIAL_PORT = "/dev/cu.usbmodem101"  # Update this to your Arduino port
 BAUD_RATE = 9600  # Using the higher baud rate
 
 # ----- Global Variables -----
@@ -185,6 +185,68 @@ def voice_input(event):
     # Run the voice input process in a separate thread to keep the UI responsive.
     threading.Thread(target=voice_input_async, daemon=True).start()
 
+
+
+def call_chatbot_api(conversation_history):
+    """
+    Converts the conversation history into a prompt and calls your chatbot model.
+    Adjust the command if you use a different API or model.
+    """
+    prompt = ""
+    for msg in conversation_history:
+        # Format each message as "role: content"
+        prompt += f"{msg['role']}: {msg['content']}\n"
+    prompt += "assistant: "  # Prompt the assistant to respond
+    
+    try:
+        result = subprocess.run(
+            ['ollama', 'run', 'phi4', prompt],
+            capture_output=True,
+            text=True
+        )
+        response = result.stdout.strip()
+    except Exception as e:
+        print(f"Error calling chatbot API: {e}")
+        response = "Sorry, I'm having trouble responding."
+    return response
+
+def chat_mode():
+    """
+    Runs a conversation loop in which the AI (with a fun personality) chats with the user.
+    The user can say "exit chat" or "quit chat" to leave the mode.
+    """
+    # Initialize conversation with a system prompt defining the AI personality.
+    conversation_history = [
+        {"role": "system", "content": "You are a fun, witty, and engaging scientific chat partner. Respond in a humorous and friendly tone. The user will ask questions related to science and centrifugation. Please be Very Brief with your response and allow for the user to continue the conversation."}
+    ]
+    
+    # Announce that chat mode has been activated.
+    asyncio.run(speak_text("Chat mode activated. What would you like to talk about?"))
+    
+    while True:
+        # Use voice-to-text to capture user input.
+        user_input = v2t.recognize_speech()
+        if not user_input:
+            continue
+        
+        # Allow exit from chat mode.
+        if "exit chat" in user_input.lower() or "quit chat" in user_input.lower():
+            asyncio.run(speak_text("Exiting chat mode."))
+            break
+        
+        # Append the user input to the conversation history.
+        conversation_history.append({"role": "user", "content": user_input})
+        
+        # Get the chatbot's response.
+        response = call_chatbot_api(conversation_history)
+        conversation_history.append({"role": "assistant", "content": response})
+        
+        # Speak the AI's response using TTS.
+        asyncio.run(speak_text(response))
+
+
+
+
 def run_session():
     """Run one full RPM session with plotting and input handling."""
     global ser, countdown_end_time, t_data, rpm_data, ma_data, set_data, pwm_data, perr_data, start_time
@@ -323,6 +385,26 @@ def run_session():
     global voice_button
     voice_button = Button(ax_voice, "Voice Input")
     voice_button.on_clicked(voice_input)
+
+    # Create the Chat Mode button axes
+    ax_chat = plt.axes([0.1, 0.1, 0.15, 0.075])
+
+    # Create a rainbow gradient background in the button's axes.
+    n = 256  # resolution
+    # Create a horizontal gradient array.
+    gradient = np.linspace(0, 1, n).reshape(1, n)
+    # Display the gradient with the 'rainbow' colormap.
+    ax_chat.imshow(gradient, aspect='auto', cmap='rainbow', origin='lower', extent=[0, 1, 0, 1])
+    # Make the axes background transparent so the gradient shows.
+    ax_chat.patch.set_alpha(0)
+
+    # Create a Button with transparent background to reveal the gradient.
+    chat_button = Button(ax_chat, "Chat Mode", color='none', hovercolor='none')
+    chat_button.label.set_fontsize(12)  # Optional: adjust text size
+
+    # Set up the button to start chat_mode in a new thread.
+    chat_button.on_clicked(lambda event: threading.Thread(target=chat_mode, daemon=True).start())
+
 
     plt.show()
     ser.close()

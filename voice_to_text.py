@@ -13,7 +13,7 @@ FILENAME = "input.wav"
 TRIGGER_WORD = "Jeff"  # Trigger word (case-insensitive)
 
 # Load the Whisper model on CPU with FP32 explicitly
-model = whisper.load_model("base").to("cpu").float()
+model = whisper.load_model("small").to("cpu").float()
 
 def recognize_speech():
     print("Recording...")
