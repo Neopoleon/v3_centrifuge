@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import sys
 import serial
 import time
 import re
@@ -7,27 +6,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import TextBox, Button
-import voice_to_text as v2t
-import subprocess
+import voice_to_text as v2t  # Using your existing voice_to_text module (unchanged)
+import subprocess  # Needed to call phi4 and to play audio
 import asyncio
-import edge_tts
+import edge_tts  # Edge TTS package for neural voices
 import os
 import threading
 
-# --- TTS Helper ---
+# ----- TTS Helper Function using Edgpipe TTS -----
 async def speak_text(text):
-    communicate = edge_tts.Communicate(text, voice="en-US-GuyNeural")
+    # Using "en-US-GuyNeural" for a deeper voice.
+    communicate = edge_tts.Communicate(text, voice="en-GB-RyanNeural")
     output_file = "tts_output.mp3"
     await communicate.save(output_file)
-    subprocess.run(["afplay", output_file])  # For macOS; adjust if needed
+    # On macOS, use afplay to play the audio file. Change if on another OS.
+    subprocess.run(["afplay", output_file])
     os.remove(output_file)
 
-# --- Configuration ---
-SERIAL_PORT = "/dev/cu.usbmodem1101"  # adjust to your board
-BAUD_RATE = 9600
+# ----- Configuration -----
+SERIAL_PORT = "/dev/cu.usbmodem1101"  # Update this to your Arduino port
+BAUD_RATE = 9600  # Using the higher baud rate
 
-# --- Globals ---
-countdown_end_time = None
+# ----- Global Variables -----
+countdown_end_time = None  # Global countdown timer for sending stop command
+# Variables for data storage; these will be reinitialized each session.
 t_data = []
 rpm_data = []
 ma_data = []
@@ -36,52 +38,22 @@ pwm_data = []
 perr_data = []
 start_time = None
 
-# --- Sliding Window Log ---
-terminal_log = []
-log_text_object = None
-MAX_VISIBLE_LINES = 20  # Only show the last 20 lines
-
-class EmittingStream:
-    """ Redirect 'print' statements to a list, then refresh the figure text. """
-    def __init__(self, text_update_callback):
-        self.text_update_callback = text_update_callback
-
-    def write(self, message):
-        lines = message.split("\n")
-        for line in lines:
-            if line.strip():
-                terminal_log.append(line.rstrip("\r"))
-        self.text_update_callback()
-
-    def flush(self):
-        pass
-
-def update_log_text():
-    """
-    Display only the last MAX_VISIBLE_LINES lines, so new lines appear at bottom.
-    The oldest lines scroll off the top.
-    """
-    # Keep a slice of the last N lines
-    latest_lines = terminal_log[-MAX_VISIBLE_LINES:]
-    # This is normal, oldest line first ... newest line last 
-    # => new lines are visually at the bottom (because of va='top')
-    log_text = "\n".join(latest_lines)
-    if log_text_object is not None:
-        log_text_object.set_text(log_text)
-    plt.draw()
-
-# Redirect stdout to use our custom logger
-sys.stdout = EmittingStream(update_log_text)
-
-# --- Helper Functions ---
+# ----- Helper Functions -----
 def parse_command(command):
+    """
+    Parses a command string to extract the RPM and time.
+    Strips extra whitespace and expects a format like "<RPM> <TIME>" or "<RPM>,<TIME>".
+    It also supports natural language inputs containing "rpm" and a time unit.
+    """
     command = command.strip()
+    # Try simple two-number format.
     two_numbers = re.match(r"^(\d+)[,\s]+(\d+)$", command)
     if two_numbers:
         rpm_val = int(two_numbers.group(1))
         timer = int(two_numbers.group(2))
         return rpm_val, timer
 
+    # Otherwise, use regex search for natural language patterns.
     rpm_match = re.search(r"(\d+)\s*rpm", command, re.IGNORECASE)
     time_match = re.search(r"(\d+)\s*(minutes?|seconds?)", command, re.IGNORECASE)
     
@@ -96,24 +68,30 @@ def parse_command(command):
     timer = None
     if time_match:
         timer = int(time_match.group(1))
-        if 'min' in time_match.group(2).lower():
-            timer *= 60
+        unit = time_match.group(2).lower()
+        if 'minute' in unit:
+            timer *= 60  # Convert minutes to seconds
     return rpm_val, timer
 
 def send_command(command, ser):
+    """
+    Processes the command string (from voice or manual input),
+    extracts RPM and time, and sends them to the Arduino.
+    Flushes the serial buffer to ensure the command is sent immediately.
+    """
     global countdown_end_time
+    command = command.strip()
     rpm, timer = parse_command(command)
     if rpm is not None:
         if timer is not None:
             data = f"{rpm},{timer}\n"
-            countdown_end_time = time.time() + timer
+            countdown_end_time = time.time() + timer  # Set countdown end time
         else:
             data = f"{rpm}\n"
-            countdown_end_time = None
-
+            countdown_end_time = None  # Clear countdown if no time provided
         try:
             ser.write(data.encode())
-            ser.flush()
+            ser.flush()  # Ensure the data is sent immediately
             print(f"Sent command: {data.strip()}")
         except Exception as e:
             print(f"Error sending command: {e}")
@@ -128,35 +106,42 @@ def manual_submit(event):
         rpm_val = int(rpm_text)
         timer_val = int(time_text) if time_text else None
         if timer_val is not None:
-            cmd = f"{rpm_val},{timer_val}\n"
+            command = f"{rpm_val},{timer_val}\n"
             countdown_end_time = time.time() + timer_val
         else:
-            cmd = f"{rpm_val}\n"
+            command = f"{rpm_val}\n"
             countdown_end_time = None
-
-        ser.write(cmd.encode())
+        ser.write(command.encode())
         ser.flush()
-        print(f"Sent manual command: {cmd.strip()}")
+        print(f"Sent manual command: {command.strip()}")
     except ValueError:
-        print("Invalid input. Please enter numbers for RPM and Time.")
+        print("Invalid manual input. Please enter valid numbers for RPM and Time (in seconds).")
     except Exception as e:
         print(f"Error in manual submission: {e}")
 
 def voice_input_async():
+    """
+    Runs the voice input process in a separate thread so that the UI remains responsive.
+    """
+    # Update the voice button label to indicate listening.
     voice_button.label.set_text("Listening...")
     plt.draw()
     
     print("Listening for voice command...")
-    command_text = v2t.listen_for_trigger()
+    command_text = v2t.listen_for_trigger()  # Blocks until a valid voice command is captured
     if command_text:
         print("Voice command recognized:", command_text)
         base_prompt = (
             "Extract the centrifuge settings from the following request exactly as stated. "
-            "Return the answer in '<RPM> <TIME>' format.\n\nRequest: "
+            "Ignore any extraneous words that do not affect the numerical values. "
+            "Return your answer as plain text in the format: <RPM> <TIME>.\n\n"
+            "For example, if the input is \"set centrifuge to 2000 rpm for 15 seconds\", "
+            "the output should be: 2000 15\n\n"
+            "Request: "
         )
         combined_prompt = base_prompt + command_text
         print("Generated Prompt:", combined_prompt)
-
+        
         try:
             result = subprocess.run(
                 ['ollama', 'run', 'phi4', combined_prompt],
@@ -168,18 +153,18 @@ def voice_input_async():
         except Exception as e:
             print(f"Error running phi4: {e}")
             output = ""
-
+        
         if output:
-            confirmation = f"The parsed command is: {output}. Is this correct? Please say yes or no."
-            asyncio.run(speak_text(confirmation))
-            print(confirmation)
-
+            confirmation_text = f"The parsed command is: {output}. Is this correct? Please say yes or no."
+            asyncio.run(speak_text(confirmation_text))
+            print(confirmation_text)
+            
+            # Temporarily change listening duration for confirmation.
             original_duration = v2t.DURATION
             v2t.DURATION = 5
             response = v2t.recognize_speech()
             v2t.DURATION = original_duration
             print("User response:", response)
-
             if "yes" in response.lower():
                 print("User confirmed. Sending command.")
                 asyncio.run(speak_text("Command confirmed. Sending command."))
@@ -191,19 +176,28 @@ def voice_input_async():
             print("No valid output received from phi4.")
     else:
         print("No voice command detected.")
-
+    
+    # Revert the voice button label.
     voice_button.label.set_text("Voice Input")
     plt.draw()
 
 def voice_input(event):
+    # Run the voice input process in a separate thread to keep the UI responsive.
     threading.Thread(target=voice_input_async, daemon=True).start()
 
+
+
 def call_chatbot_api(conversation_history):
+    """
+    Converts the conversation history into a prompt and calls your chatbot model.
+    Adjust the command if you use a different API or model.
+    """
     prompt = ""
     for msg in conversation_history:
+        # Format each message as "role: content"
         prompt += f"{msg['role']}: {msg['content']}\n"
-    prompt += "assistant: "
-
+    prompt += "assistant: "  # Prompt the assistant to respond
+    
     try:
         result = subprocess.run(
             ['ollama', 'run', 'phi4', prompt],
@@ -217,29 +211,45 @@ def call_chatbot_api(conversation_history):
     return response
 
 def chat_mode():
+    """
+    Runs a conversation loop in which the AI (with a fun personality) chats with the user.
+    The user can say "exit chat" or "quit chat" to leave the mode.
+    """
+    # Initialize conversation with a system prompt defining the AI personality.
     conversation_history = [
-        {"role": "system", "content": "You are a fun, witty, and engaging scientific chat partner. Be brief."}
+        {"role": "system", "content": "You are a fun, witty, and engaging scientific chat partner. Respond in a humorous and friendly tone. The user will ask questions related to science and centrifugation. Please be Very Brief with your response and allow for the user to continue the conversation."}
     ]
+    
+    # Announce that chat mode has been activated.
     asyncio.run(speak_text("Chat mode activated. What would you like to talk about?"))
-
+    
     while True:
+        # Use voice-to-text to capture user input.
         user_input = v2t.recognize_speech()
         if not user_input:
             continue
+        
+        # Allow exit from chat mode.
         if "exit chat" in user_input.lower() or "quit chat" in user_input.lower():
             asyncio.run(speak_text("Exiting chat mode."))
             break
-
+        
+        # Append the user input to the conversation history.
         conversation_history.append({"role": "user", "content": user_input})
+        
+        # Get the chatbot's response.
         response = call_chatbot_api(conversation_history)
         conversation_history.append({"role": "assistant", "content": response})
+        
+        # Speak the AI's response using TTS.
         asyncio.run(speak_text(response))
 
-def run_session():
-    global ser, countdown_end_time
-    global t_data, rpm_data, ma_data, set_data, pwm_data, perr_data, start_time
-    global log_text_object
 
+
+
+def run_session():
+    """Run one full RPM session with plotting and input handling."""
+    global ser, countdown_end_time, t_data, rpm_data, ma_data, set_data, pwm_data, perr_data, start_time
     countdown_end_time = None
     t_data = []
     rpm_data = []
@@ -249,70 +259,49 @@ def run_session():
     perr_data = []
     start_time = time.time()
 
+    # Open the serial port
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
     except Exception as e:
         print(f"Error opening serial port: {e}")
         return
 
-    time.sleep(2)
+    time.sleep(2)  # Allow time for the connection to initialize
 
+    # Regular expression to match data lines from the serial port.
     pattern = re.compile(
         r"RPM:\s*([-\d.]+)\s+MA:\s*([-\d.]+)\s+Set:\s*([-\d.]+)\s+PWM:\s*([-\d]+)\s+%Err:\s*([-\d.]+)"
     )
 
-    # Create a figure with 4 rows for 3 plots + 1 log axis
-    fig = plt.figure(figsize=(10, 10))
-    gs = fig.add_gridspec(nrows=4, ncols=1, height_ratios=[1, 1, 1, 1])
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[1, 0])
-    ax3 = fig.add_subplot(gs[2, 0])
-    ax_log = fig.add_subplot(gs[3, 0])
+    # Set up the figure and subplots.
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
+    plt.subplots_adjust(bottom=0.35, top=0.92)
+    countdown_text = fig.text(0.5, 0.97, "", ha="center", va="top", fontsize=12)
 
-    # Extra bottom margin for text boxes & buttons
-    fig.subplots_adjust(top=0.92, bottom=0.28, hspace=0.4)
-
-    countdown_text = fig.text(0.5, 0.96, "", ha="center", va="top", fontsize=12)
-
-    # RPM/MA/Set
     line_rpm, = ax1.plot([], [], "o-", label="RPM")
-    line_ma,  = ax1.plot([], [], "x--", label="MA")
+    line_ma, = ax1.plot([], [], "x--", label="MA")
     line_set, = ax1.plot([], [], "s:", label="Set")
     ax1.set_ylabel("RPM")
-    ax1.set_title("RPM, MA, and Set vs. Time")
-    ax1.legend(loc="upper right")
+    ax1.set_title("RPM, MA, and Set RPM vs. Time")
+    ax1.legend()
     ax1.grid(True)
 
-    # PWM in magenta
     line_pwm, = ax2.plot([], [], "o-", color="magenta", label="PWM")
     ax2.set_ylabel("PWM")
     ax2.set_title("PWM vs. Time")
-    ax2.legend(loc="upper right")
+    ax2.legend()
     ax2.grid(True)
 
-    # %Err in red
     line_perr, = ax3.plot([], [], "o-", color="red", label="% Err")
     ax3.set_xlabel("Time (s)")
     ax3.set_ylabel("% Err")
     ax3.set_title("Percentage Error vs. Time")
-    ax3.legend(loc="upper right")
+    ax3.legend()
     ax3.grid(True)
-
-    # -- Terminal Log Axis --
-    ax_log.axis("off")
-    # Pin the text to the top-left corner. New lines accumulate downward.
-    # clip_on=True ensures text doesn’t overflow if it’s too big.
-    log_text_object = ax_log.text(
-        0, 1, "",
-        va="top", ha="left",
-        fontsize=9,
-        family="monospace",
-        clip_on=True,
-        transform=ax_log.transAxes
-    )
 
     def update(frame):
         global countdown_end_time
+        # Read available serial lines.
         while ser.in_waiting:
             try:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
@@ -323,10 +312,10 @@ def run_session():
                 m = pattern.search(line)
                 if m:
                     try:
-                        rpm_val  = float(m.group(1))
-                        ma_val   = float(m.group(2))
-                        set_val  = float(m.group(3))
-                        pwm_val  = int(m.group(4))
+                        rpm_val = float(m.group(1))
+                        ma_val = float(m.group(2))
+                        set_val = float(m.group(3))
+                        pwm_val = int(m.group(4))
                         perr_val = float(m.group(5))
                     except ValueError:
                         continue
@@ -338,8 +327,8 @@ def run_session():
                     pwm_data.append(pwm_val)
                     perr_data.append(perr_val)
 
+        # Keep only the last 60 seconds of data.
         current_time = time.time() - start_time
-        # Keep only 60s of rolling data
         while t_data and t_data[0] < current_time - 60:
             t_data.pop(0)
             rpm_data.pop(0)
@@ -348,6 +337,7 @@ def run_session():
             pwm_data.pop(0)
             perr_data.pop(0)
 
+        # Update plot lines.
         line_rpm.set_data(t_data, rpm_data)
         line_ma.set_data(t_data, ma_data)
         line_set.set_data(t_data, set_data)
@@ -359,6 +349,7 @@ def run_session():
             ax.relim()
             ax.autoscale_view(scalex=False)
 
+        # Update countdown text if a timer is active.
         if countdown_end_time is not None:
             remaining = countdown_end_time - time.time()
             if remaining <= 0:
@@ -373,45 +364,56 @@ def run_session():
                 countdown_text.set_text(f"Remaining Time: {int(remaining)} s")
         else:
             countdown_text.set_text("")
-
-        return (line_rpm, line_ma, line_set, line_pwm, line_perr)
+        return line_rpm, line_ma, line_set, line_pwm, line_perr
 
     ani = FuncAnimation(fig, update, interval=100)
 
-    # ------------- Place text boxes and buttons -------------
-    ax_rpm = fig.add_axes([0.1, 0.16, 0.25, 0.05])
+    # Set up widgets.
+    ax_rpm = plt.axes([0.1, 0.22, 0.3, 0.075])
     global rpm_box
     rpm_box = TextBox(ax_rpm, "RPM")
 
-    ax_time = fig.add_axes([0.45, 0.16, 0.25, 0.05])
+    ax_time = plt.axes([0.45, 0.22, 0.3, 0.075])
     global time_box
     time_box = TextBox(ax_time, "Time (s)")
 
-    ax_submit = fig.add_axes([0.8, 0.16, 0.12, 0.05])
-    submit_button = Button(ax_submit, "Submit")
-    submit_button.on_clicked(manual_submit)
+    ax_submit = plt.axes([0.8, 0.22, 0.15, 0.075])
+    manual_submit_button = Button(ax_submit, "Submit")
+    manual_submit_button.on_clicked(manual_submit)
 
-    ax_voice = fig.add_axes([0.8, 0.08, 0.12, 0.05])
+    ax_voice = plt.axes([0.8, 0.1, 0.15, 0.075])
     global voice_button
     voice_button = Button(ax_voice, "Voice Input")
     voice_button.on_clicked(voice_input)
 
-    ax_chat = fig.add_axes([0.1, 0.08, 0.15, 0.05])
-    n = 256
+    # Create the Chat Mode button axes
+    ax_chat = plt.axes([0.1, 0.1, 0.15, 0.075])
+
+    # Create a rainbow gradient background in the button's axes.
+    n = 256  # resolution
+    # Create a horizontal gradient array.
     gradient = np.linspace(0, 1, n).reshape(1, n)
-    ax_chat.imshow(gradient, aspect='auto', cmap='rainbow',
-                   origin='lower', extent=[0, 1, 0, 1])
+    # Display the gradient with the 'rainbow' colormap.
+    ax_chat.imshow(gradient, aspect='auto', cmap='rainbow', origin='lower', extent=[0, 1, 0, 1])
+    # Make the axes background transparent so the gradient shows.
     ax_chat.patch.set_alpha(0)
+
+    # Create a Button with transparent background to reveal the gradient.
     chat_button = Button(ax_chat, "Chat Mode", color='none', hovercolor='none')
-    chat_button.label.set_fontsize(12)
+    chat_button.label.set_fontsize(12)  # Optional: adjust text size
+
+    # Set up the button to start chat_mode in a new thread.
     chat_button.on_clicked(lambda event: threading.Thread(target=chat_mode, daemon=True).start())
+
 
     plt.show()
     ser.close()
 
 if __name__ == '__main__':
     while True:
-        run_session()
+        run_session()  # Run one full RPM session.
+
+        # After the session ends (when the plot window is closed), ask if the user wants a new session.
         asyncio.run(speak_text("Do you want to start a new session? Please say yes or no."))
         print("Awaiting response for new session...")
         response = v2t.recognize_speech()
